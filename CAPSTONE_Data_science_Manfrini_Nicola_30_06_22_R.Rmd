@@ -1,0 +1,291 @@
+---
+title: "CAPSTONE_Data_Science_Manfrini_Nicola"
+author: "Nicola Manfrini"
+date: "30/06/2022"
+output: pdf_document
+---
+INTRODUCTION/OVERVIEW/EXECUTIVE SUMMARY
+
+This dataset "movielens" was previously used during the data Science professional certificate courses.
+It was generated from a dataset of the Grouplens research lab which was based on a larger NEtflix database, that was itself used to predict user rating for films in 2006 in the so-called Netflix Prize.
+Fortunately Movielens is a much smaller/filtered and thus user-friendly database.
+
+The idea is to determine a model to predict ratings of a movie in order to obtain the lowest Residual Mean Squared Error
+(RMSE) possible. My approach was to apply a linear model starting from the mean
+
+METHODS
+Ok,ready to start the movielens exercise.
+First thing I will load all that is needed for perfoming the analysis and exercise
+```{r data_preparation}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+```
+
+Next I will generate the final train set and test on which to evaluate the model on. The validation (test set) will be 10% of the entire Movielens dataset
+
+```{r edx and validation_set generation}
+set.seed(1, sample.kind="Rounding") 
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+# following code is to test and confirm that userId and movieId in validation set are also present in the edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+# Next rows previosly removed from the validation set will be added back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+Now i will start the project following the following instructions that were given:
+
+#you will train a machine learning algorithm using the inputs in one subset to predict movie ratings in the validation set. 
+#Your project itself will be assessed by peer grading.
+
+#Predict movie ratings in the validation set (the final hold-out test set) as if they were unknown. 
+#RMSE will be used to evaluate how close your predictions are to the true values in the validation set 
+#(the final hold-out test set).
+
+I will start by sub-partitioning edx into test and training set, I will use them for generating and testing my models:
+I will prepare models on the sub-training set and test them on the sub-test set
+
+
+
+```{r preparation of sub-test and training sets}
+library(dslabs)
+test_index <- createDataPartition(y = edx$rating, times = 1,
+                                  p = 0.2, list = FALSE)
+
+train_set <- edx[-test_index,]
+test_set <- edx[test_index,]
+test_set <- test_set %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId")
+
+```
+
+Before anything we need to define RMSE which will be the way to evaluate the efficay of our models.
+We will also define mu which is the mean of the values we want to predict. From mu and the RMSE of mu compared to true ratings we can only do better.
+```{R RMSE and mu definition and model number 1}
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+mu <- mean(train_set$rating)
+# let's define our starting RMSE from which we can only do better #
+model_1_rmse <- RMSE(test_set$rating, mu)
+rmse_results <- (data_frame(method="Just the mean model",RMSE = model_1_rmse ))
+```
+RMSE of mu relative to true rating values is really high:  1.0607, from here we can only improve, we can only improve
+Starting from the mean of rating values we will develop a linear regression model to predict ratings.
+Let's begin implementing our model starting from one simple assumption
+By experience for sure some genres are rated more than others
+First thing let's see if this holds true
+```{R linear models}
+# let's have a look at what we are dealing with to have an idea of the predictors we can use to implement a model on ratings
+names(edx)
+
+genres_c <- train_set %>% 
+  group_by(genres) %>% 
+  summarize(c_g = mean(rating - mu))
+genres_c
+qplot(c_g, data = genres_c, bins = 10, color = I("black"))
+```
+
+It seems ok, lets predict a simple model using genre bias
+```{R second model}
+predicted_ratings <- test_set %>% 
+  left_join(genres_c, by='genres') %>%
+  mutate(pred = mu + c_g) %>%
+  .$pred
+model_2_rmse <- RMSE(predicted_ratings, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Genres Model",  
+                                     RMSE = model_2_rmse ))
+
+# let's check if it is ok #                 
+rmse_results
+#we did a little better
+```
+Let's implement using the user predictor, as users for sure have an effect on rating value
+
+```{R third model}
+# let's see if users also have an effect on ratings, if affermative we will also use them to prepare a model #
+user_c <- train_set %>% 
+  left_join(genres_c, by='genres') %>%
+  group_by(userId) %>%
+  summarize(c_u = mean(rating - mu - c_g))
+user_c
+qplot(c_u, data = user_c, bins = 10, color = I("black"))
+# yes also used id inserts a great bias #
+## let's implement using users #
+# model number 3 # 
+predicted_ratings <- test_set %>% 
+  left_join(genres_c, by='genres') %>%
+  left_join(user_c, by='userId') %>%
+  mutate(pred = mu + c_g + c_u) %>%
+  .$pred
+model_3_rmse <- RMSE(predicted_ratings, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Genres + User Model",  
+                                     RMSE = model_3_rmse ))
+# Let's see if we actually improved#
+rmse_results
+# we did #
+```
+Let's implement using titles, as titles per se could affect movie rating. Let's see if it is true
+```{R tile effect}
+title_c <- train_set %>% 
+  left_join(genres_c, by='genres') %>%
+  left_join(user_c, by='userId')%>%
+  group_by(title) %>%
+  summarize(c_t = mean(rating - mu - c_g - c_u))
+title_c
+qplot(c_t, data = title_c, bins = 10, color = I("black"))
+```
+Titles seems to bring a bias on movie ratings.
+At this point let's use movie titles to implement the model
+```{R fourth model}
+
+# model number 4 #
+
+predicted_ratings <- test_set %>% 
+  left_join(genres_c, by='genres') %>%
+  left_join(user_c, by='userId') %>%
+  left_join(title_c, by='title') %>%
+  mutate(pred = mu + c_g + c_u + c_t) %>%
+  .$pred
+model_4_rmse <- RMSE(predicted_ratings, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Genres + User + title Model",  
+                                     RMSE = model_4_rmse ))
+# let's see if we did better #
+rmse_results
+# this fourth model seems to work really good#
+
+#but let's try a little harder, let's try inserting time, maybe in different periods movies were rated differentially#
+
+```
+It indeed works good but let's try adding something to improve the model, i.e. something that has to do with the time at which ratings were made. Let's use the month unit
+
+```{r fift model with time}
+# model 5 #
+# let's convert timestamp to dates using month as unit #
+# to do so we need to install the lubridate package #
+if(!require(lubridate)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+library(lubridate)
+
+time_c <- train_set %>% 
+  left_join(genres_c, by='genres') %>%
+  left_join(user_c, by='userId') %>%
+  left_join(title_c, by='title') %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "month")) %>%
+  group_by(date) %>%
+  summarize(c_time = mean(rating - mu - c_g - c_u - c_t))
+time_c
+# Let's see if time gives any bias #
+qplot(c_time, data = time_c, bins = 10, color = I("black"))
+
+# there's a really really small, if any, bias due to time let's test it anyway #
+# let's add it to our model #
+predicted_ratings <- test_set %>% 
+  left_join(genres_c, by='genres') %>%
+  left_join(user_c, by='userId') %>%
+  left_join(title_c, by='title') %>%
+  mutate(date = round_date(as_datetime(timestamp), unit = "month")) %>%
+  left_join(time_c, by='date') %>%
+  mutate(pred = mu + c_g + c_u + c_t + c_time) %>%
+  .$pred
+model_5_rmse <- RMSE(predicted_ratings, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Genres + User + title + time month Model",  
+                                     RMSE = model_5_rmse ))
+
+rmse_results
+# time model using month does not add anything ##
+
+```
+
+Adding time did not do any good to  our model, not increasing the RMSE at all. Now let's check timestamp using the week unit
+```{R sixt model using only time}
+# let's try only time using week on original data to see if there's any bias
+time_week_only <- train_set %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  group_by(date) %>%
+  summarize(only_time = mean(rating - mu))
+time_week_only
+
+predicted_ratings <- test_set %>% 
+  mutate(date = round_date(as_datetime(timestamp), unit = "week")) %>%
+  left_join(time_week_only, by= 'date') %>%
+  mutate(pred = mu + only_time) %>%
+  .$pred
+model_6_rmse <- RMSE(predicted_ratings, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="time_week_only_model",  
+                                     RMSE = model_6_rmse ))
+# Let's see how we did #
+rmse_results
+# nothing good happened, really bad results. We will stick with model number 4 #
+
+```
+The best RMSE comes from model number 4. Let's try to create the same model from the final edx set, testing it to the final validation set.
+We know our model (trained on our train set) works in our test set, but will it work if we generate it on the edx set and test it on the validation set?
+```{r model 4 "genres + user + title model" applied to edx and final validation set}
+mu_edx <- mean(edx$rating) 
+genres_c_edx <- edx %>% 
+  group_by(genres) %>% 
+  summarize(c_g_edx = mean(rating - mu_edx))
+
+user_c_edx <- edx %>% 
+  left_join(genres_c_edx, by='genres') %>%
+  group_by(userId) %>%
+  summarize(c_u_edx = mean(rating - mu_edx - c_g_edx))
+
+title_c_edx <- edx %>% 
+  left_join(genres_c_edx, by='genres') %>%
+  left_join(user_c_edx, by='userId')%>%
+  group_by(title) %>%
+  summarize(c_t_edx = mean(rating - mu_edx - c_g_edx - c_u_edx))
+
+predicted_ratings_temp <- validation %>% 
+  left_join(genres_c_edx, by='genres') %>%
+  left_join(user_c_edx, by='userId') %>%
+  left_join(title_c_edx, by='title') %>%
+  mutate(pred = mu_edx + c_g_edx + c_u_edx + c_t_edx) %>%
+  .$pred
+RMSE_final_model <- RMSE(predicted_ratings_temp, validation$rating)
+RMSE_final_model
+
+## yes!!! we created a simple model that seems to work#
+## cool! ##
+# our final model RMSE is more or less 0.871, even better than expected, we did pretty good!!
+```
+We finally have established a model which predicts ratings based on "Genre, User and Title effects".
+
+CONCLUSIONS
+The model we generated gives a final RMSE of 0.8712 which is much better than our starting RMSE of 1.06, which was based on tha mean of ratings from the train set.
+Of course implementations could be performed, i tried implementing using non linear models but they all failed.
+Regularization could be the next step in order to keep into account the number of ratings per movie for example.
